@@ -363,6 +363,10 @@ final actor LambdaRuntimeClient: LambdaRuntimeClientProtocol {
     }
 }
 
+struct UnsafeTransfer<T>: @unchecked Sendable {
+    let value: T
+}
+
 extension LambdaRuntimeClient: LambdaChannelHandlerDelegate {
     nonisolated func connectionErrorHappened(_ error: any Error, channel: any Channel) {
 
@@ -465,10 +469,27 @@ private final class LambdaChannelHandler<Delegate: LambdaChannelHandlerDelegate>
     func nextInvocation(isolation: isolated (any Actor)? = #isolation) async throws -> Invocation {
         switch self.state {
         case .connected(let context, .idle):
-            return try await withCheckedThrowingContinuation {
-                (continuation: CheckedContinuation<Invocation, any Error>) in
-                self.state = .connected(context, .waitingForNextInvocation(continuation))
-                self.sendNextRequest(context: context)
+            return try await withTaskCancellationHandler {
+                if Task.isCancelled {
+                    throw CancellationError()
+                }
+                return try await withCheckedThrowingContinuation {
+                    (continuation: CheckedContinuation<Invocation, any Error>) in
+                    self.state = .connected(context, .waitingForNextInvocation(continuation))
+                    let unsafeContext = UnsafeTransfer(value: context)
+                    context.eventLoop.execute {
+                        self.sendNextRequest(context: unsafeContext.value)
+                    }
+                }
+            } onCancel: {
+                switch self.state {
+                case .connected(_, .waitingForNextInvocation(let continuation)):
+                    continuation.resume(throwing: CancellationError())
+                case .connected(_, .idle):
+                    break
+                default:
+                    fatalError("Invalid state: \(self.state)")
+                }
             }
 
         case .connected(_, .sendingResponse),
