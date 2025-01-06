@@ -39,7 +39,7 @@ public enum Lambda {
 
         while !Task.isCancelled {
             let (invocation, writer) = try await runtimeClient.nextInvocation()
-
+            logger.info("invocation: \(invocation)")
             do {
                 try await handler.handle(
                     invocation.event,
